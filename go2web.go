@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	htmlparser "go2web/htmlParser"
 	"io"
-	"log"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -42,51 +44,54 @@ func main() {
 	}
 }
 
-func toGoogleSearch(search []string) string {
-	var searchBuilder strings.Builder
-	for _, term := range search {
-		if strings.Contains(term, "+") {
-			var sb strings.Builder
-			for _, char := range term {
-				if char == '+' {
-					sb.WriteString("%2B")
-				} else {
-					sb.WriteRune(char)
-				}
-			}
-			searchBuilder.WriteString(sb.String())
-			searchBuilder.WriteRune('+')
-		} else {
-			searchBuilder.WriteString(term)
-			searchBuilder.WriteRune('+')
-		}
-	}
-	result := searchBuilder.String()
-	return result[:len(result)-1]
-}
-
 func search(arguments []string) {
 	host := "www.google.com"
-	path := "/search?q=" + toGoogleSearch(arguments)
+	path := "/search?q=" + url.QueryEscape(strings.Join(arguments, " "))
+	// path = "/"
 
-	addr, err := net.ResolveTCPAddr("tcp", host+":80")
+	conn, err := net.Dial("tcp", host+":80")
 	if err != nil {
-		log.Fatal("could not resolve tcp address:", err)
-	}
-	conn, err := net.DialTCP("tcp", nil, addr)
-	if err != nil {
-		log.Fatal("could not dial:", err)
+		fmt.Println("Error connecting: ", err)
 		return
 	}
-
 	defer conn.Close()
 
-	fmt.Println("Sending request to: " + host + path)
-	httpReq := "GET " + path + " HTTP/1.0\r\n"
+	httpReq := "GET " + path + " HTTP/1.1\r\n"
+	httpReq += "Host: " + host + "\r\n"
+	httpReq += "User-Agent: Go2WebSearch/1.0\r\n"
+	httpReq += "Accept: text/html\r\n"
+	httpReq += "Connection: close\r\n"
 	httpReq += "\r\n"
-	fmt.Fprintf(conn, "%s", httpReq)
 
+	fmt.Println("Sending request to: " + host + path)
+	_, err = conn.Write([]byte(httpReq))
+	if err != nil {
+		fmt.Println("Error sendig request: ", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	fmt.Println("Response headers:")
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil || line == "\r\n" {
+			break
+		}
+		fmt.Print(line)
+	}
+
+	fmt.Println("\nResponse body:")
 	var buf bytes.Buffer
-	io.Copy(&buf, conn)
-	fmt.Printf("got this response:\n%s", buf.Bytes())
+	_, err = io.Copy(&buf, reader)
+	if err != nil && err != io.EOF {
+		fmt.Println("Error reading response body: ", err)
+		return
+	}
+	fmt.Printf("Body: %d bytes\n", buf.Len())
+	// fmt.Println(buf.String())
+	err = os.WriteFile("google_response.html", buf.Bytes(), 0644)
+	if err != nil {
+		fmt.Println("Error saving response:", err)
+		return
+	}
+	htmlparser.Test(strings.NewReader(buf.String()))
 }
