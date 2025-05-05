@@ -3,13 +3,15 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"fmt"
-	htmlparser "go2web/htmlParser"
 	"io"
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -45,11 +47,19 @@ func main() {
 }
 
 func search(arguments []string) {
-	host := "www.google.com"
+	host := "www.bing.com"
 	path := "/search?q=" + url.QueryEscape(strings.Join(arguments, " "))
-	// path = "/"
 
-	conn, err := net.Dial("tcp", host+":80")
+	config := &tls.Config{
+		ServerName:         host,
+		InsecureSkipVerify: false,
+	}
+
+	dialer := &net.Dialer{
+		Timeout: 30 * time.Second,
+	}
+
+	conn, err := tls.DialWithDialer(dialer, "tcp", host+":443", config)
 	if err != nil {
 		fmt.Println("Error connecting: ", err)
 		return
@@ -58,9 +68,19 @@ func search(arguments []string) {
 
 	httpReq := "GET " + path + " HTTP/1.1\r\n"
 	httpReq += "Host: " + host + "\r\n"
-	httpReq += "User-Agent: Go2WebSearch/1.0\r\n"
-	httpReq += "Accept: text/html\r\n"
+	httpReq += "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n"
+	httpReq += "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\r\n"
+	httpReq += "Accept-Language: en-US,en;q=0.5\r\n"
+	httpReq += "Accept-Encoding: identity\r\n"
 	httpReq += "Connection: close\r\n"
+	httpReq += "Upgrade-Insecure-Requests: 1\r\n"
+	httpReq += "Cache-Control: max-age=0\r\n"
+	httpReq += "Sec-Fetch-Dest: document\r\n"
+	httpReq += "Sec-Fetch-Mode: navigate\r\n"
+	httpReq += "Sec-Fetch-Site: none\r\n"
+	httpReq += "Sec-Fetch-User: ?1\r\n"
+	httpReq += "Pragma: no-cache\r\n"
+	httpReq += "DNT: 1\r\n"
 	httpReq += "\r\n"
 
 	fmt.Println("Sending request to: " + host + path)
@@ -70,28 +90,49 @@ func search(arguments []string) {
 	}
 
 	reader := bufio.NewReader(conn)
-	fmt.Println("Response headers:")
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil || line == "\r\n" {
-			break
-		}
-		fmt.Print(line)
-	}
 
-	fmt.Println("\nResponse body:")
+	statusLine, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading status: ", err)
+	}
+	fmt.Println("Status: ", statusLine)
+
 	var buf bytes.Buffer
 	_, err = io.Copy(&buf, reader)
 	if err != nil && err != io.EOF {
 		fmt.Println("Error reading response body: ", err)
 		return
 	}
-	fmt.Printf("Body: %d bytes\n", buf.Len())
-	// fmt.Println(buf.String())
-	err = os.WriteFile("google_response.html", buf.Bytes(), 0644)
+
+	err = os.WriteFile("response.html", buf.Bytes(), 0644)
 	if err != nil {
 		fmt.Println("Error saving response:", err)
 		return
 	}
-	htmlparser.Test(strings.NewReader(buf.String()))
+
+	extractSearchResults(buf.String())
+}
+
+func extractSearchResults(body string) {
+	regEx := regexp.MustCompile(`<h2><a href="([^"]+)"`)
+	matches := regEx.FindAllStringSubmatch(body, -1)
+	var results []string
+	for _, match := range matches {
+		if len(match) > 1 {
+			results = append(results, match[1])
+		}
+	}
+
+	if len(results) > 0 {
+		fmt.Printf("\nFound %d search results:\n", len(results))
+		maxResults := 10
+		if len(results) < maxResults {
+			maxResults = len(results)
+		}
+		for i := 0; i < maxResults; i++ {
+			fmt.Printf("%d. %s\n", i+1, results[i])
+		}
+	} else {
+		fmt.Println(("No search results found in the response"))
+	}
 }
