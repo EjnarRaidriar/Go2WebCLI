@@ -26,6 +26,7 @@ func main() {
 			fmt.Println("Error:\n\t-u expects single url argument")
 		} else {
 			fmt.Printf("Making request to %s\n", args[1])
+			searchUrl(args[1])
 		}
 	}
 	if args[0] == SEARCH {
@@ -33,7 +34,7 @@ func main() {
 			fmt.Println("Error:\n\t-s expects at least one argument")
 		} else {
 			fmt.Printf("Searching term: %s\n", strings.Join(args[1:], " "))
-			search(args[1:])
+			searchArg(args[1:])
 		}
 	}
 	if args[0] == "-h" {
@@ -46,23 +47,63 @@ func main() {
 	}
 }
 
-func search(arguments []string) {
-	host := "www.bing.com"
-	path := "/search?q=" + url.QueryEscape(strings.Join(arguments, " "))
-
-	config := &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: false,
-	}
-
-	dialer := &net.Dialer{
-		Timeout: 30 * time.Second,
-	}
-
-	conn, err := tls.DialWithDialer(dialer, "tcp", host+":443", config)
+func getResponse(urlStr string) (string, error) {
+	parsedUrl, err := url.Parse(urlStr)
 	if err != nil {
-		fmt.Println("Error connecting: ", err)
-		return
+		fmt.Println("Error parsing URL: ", err)
+		return "", err
+	}
+
+	if parsedUrl.Scheme == "" {
+		parsedUrl.Scheme = "https"
+		// urlStr = parsedUrl.String()
+		fmt.Println("No scheme provided, using https by default")
+	}
+
+	host := parsedUrl.Host
+	path := parsedUrl.Path
+
+	if path == "" {
+		path = "/"
+	}
+	if parsedUrl.RawQuery != "" {
+		path += "?" + parsedUrl.RawQuery
+	}
+
+	fmt.Printf("Host %s, Path: %s\n", host, path)
+
+	port := "443"
+	if parsedUrl.Scheme == "http" {
+		port = "80"
+	}
+	if strings.Contains(host, ":") {
+		hostParts := strings.Split(host, ":")
+		host = hostParts[0]
+		port = hostParts[1]
+	}
+
+	var conn net.Conn
+	var connErr error
+
+	if parsedUrl.Scheme == "https" {
+		config := &tls.Config{
+			ServerName:         host,
+			InsecureSkipVerify: false,
+		}
+		dialer := &net.Dialer{
+			Timeout: 30 * time.Second,
+		}
+		conn, connErr = tls.DialWithDialer(dialer, "tcp", host+":"+port, config)
+	} else {
+		dialer := &net.Dialer{
+			Timeout: 30 * time.Second,
+		}
+		conn, connErr = dialer.Dial("tcp", host+":"+port)
+	}
+
+	if connErr != nil {
+		fmt.Println("Error connecting: ", connErr)
+		return "", err
 	}
 	defer conn.Close()
 
@@ -87,6 +128,7 @@ func search(arguments []string) {
 	_, err = conn.Write([]byte(httpReq))
 	if err != nil {
 		fmt.Println("Error sendig request: ", err)
+		return "", err
 	}
 
 	reader := bufio.NewReader(conn)
@@ -94,26 +136,50 @@ func search(arguments []string) {
 	statusLine, err := reader.ReadString('\n')
 	if err != nil {
 		fmt.Println("Error reading status: ", err)
+		return "", err
 	}
+
 	fmt.Println("Status: ", statusLine)
 
 	var buf bytes.Buffer
 	_, err = io.Copy(&buf, reader)
 	if err != nil && err != io.EOF {
 		fmt.Println("Error reading response body: ", err)
-		return
+		return "", err
 	}
 
 	err = os.WriteFile("response.html", buf.Bytes(), 0644)
 	if err != nil {
 		fmt.Println("Error saving response:", err)
+		return "", err
+	}
+
+	return buf.String(), nil
+}
+
+func searchUrl(urlStr string) {
+	response, err := getResponse(urlStr)
+	if err != nil {
 		return
 	}
 
-	extractSearchResults(buf.String())
+	fmt.Println("\nResponse body:")
+	fmt.Println(response)
 }
 
-func extractSearchResults(body string) {
+func searchArg(arguments []string) {
+	host := "www.bing.com"
+	path := "/search?q=" + url.QueryEscape(strings.Join(arguments, " "))
+	urlStr := "https://" + host + path
+	response, err := getResponse(urlStr)
+	if err != nil {
+		return
+	}
+
+	printSearchResults(response)
+}
+
+func printSearchResults(body string) {
 	regEx := regexp.MustCompile(`<h2><a href="([^"]+)"`)
 	matches := regEx.FindAllStringSubmatch(body, -1)
 	var results []string
